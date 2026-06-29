@@ -1,0 +1,23 @@
+# weights / data / large binaries — never commit
+*.pth
+*.pt
+provenance/*.pth
+smoke/out/
+
+# the upstream DINO clone is vendored separately once the integration settles;
+# exclude its nested .git, build artifacts, and compiled ops from tracking
+DINO_upstream/.git/
+**/build/
+*.so
+*.o
+
+# python
+**/__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# scratch
+*.log
+config_cfg.py
+config_args_raw.json
+DINO_upstream/
