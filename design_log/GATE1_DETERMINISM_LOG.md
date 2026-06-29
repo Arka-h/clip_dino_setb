@@ -18,6 +18,22 @@ This establishes the deterministic foundation BEFORE any CASF is added (handover
 on the base). The full DINO-CASF model must re-pass this same probe (with CDN-noise and query-selection
 seeding) after integration — tracked as task #7.
 
-## Full DINO-CASF — ⏳ pending (after integration, tasks #5/#6)
-- Will extend the probe to feed a fixed sketch tensor and verify CDN-noise sampling + query selection are
-  seeded and bit-identical across launches.
+## Full DINO-CASF — ✅ PASS  [2026-06-30]  (probe: smoke/probe_casf_dino.py, fixed image + fixed sketch)
+Built casf=True, num_classes=91 (so enc_out_class_embed loads pretrained → identical query selection).
+Checkpoint load: kept=602, dropped=24 (the now-512-in gated decoder class heads → reinit, by design D7),
+missing=333 (new CASF params + separately-loaded CLIP), unexpected=0. SketchCLIP loaded vit_clip2
+missing=0/unexpected=0; partial-freeze → 50 trainable LN param-tensors.
+
+- **Zero-init box invariant:** with DePathBlock zero_init_residual=True (identity) AND BoxSketchAdapter
+  gate=0 (identity), the whole sketch conditioning is identity on the localisation path at init.
+  pred_boxes sum = 2677.728271 == base DINO 2677.728271. **max|Δ pred_boxes vs base DINO| = 0.0 → PASS**
+  (pred_logits differ — gated binary class head is reinit — expected). Pretrained DINO LFT fully preserved.
+- **Gate 1 full (EVAL, two launches):** max|Δ pred_logits| = 0.0 ; max|Δ pred_boxes| = 0.0 → PASS.
+- **Gate 1 full (TRAIN, CDN active, two launches):** dn_meta populated (pad_size/num_dn_group/
+  output_known_lbs_bboxes) → DePathBlock composes with CDN; max|Δ pred_logits| = 0.0 ;
+  max|Δ pred_boxes| = 0.0 → PASS. Confirms CDN-noise sampling + query selection are deterministic with
+  the seed set before build (no unseeded stochastic source).
+
+Gate 1 (§7) is satisfied for BOTH base and full DINO-CASF. Note: the eval-time AP-determinism on real
+data still needs re-confirmation once the dataset adapter (task #6) exists, but the model-output bit-
+identity (the core of Gate 1) is established.

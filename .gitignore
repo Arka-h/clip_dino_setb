@@ -20,4 +20,6 @@ DINO_upstream/.git/
 *.log
 config_cfg.py
 config_args_raw.json
-DINO_upstream/
+
+# DINO_upstream is vendored (source tracked); only its build artifacts/clone-git are ignored (above).
+DINO_upstream/figs/

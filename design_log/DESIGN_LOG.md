@@ -165,6 +165,13 @@ collapse risk (handled separately in D2).
   exp(log_temp)/√head_dim). `DePathBlock` = cross-attn(+residual) → TinyFFN (GEGLU, d_ff 384, +residual).
   One block per decoder layer (6), built as `refine_output = ModuleList([DePathBlock(...) ×6])`. ✅
   These are *new* params (not in the COCO checkpoint) → trained from init.
+- **D10 addendum — zero-init warm-start (DINO deviation, deliverable #4):** DePathBlock is built with
+  `zero_init_residual=True` → `attn.w_o` and `ffn.o` are zero-initialised, so the block is the IDENTITY at
+  init. Combined with BoxSketchAdapter gate=0 (D2), the *entire* sketch conditioning is identity on the
+  localisation path at init, so the full DINO-CASF reproduces base DINO's boxes bit-identically at step 0
+  (verified: max|Δ pred_boxes|=0.0) and the sketch influence is *learned up*. The reference DDETR did NOT
+  zero-init `w_o`; we add it to protect DINO's strong pretrained init / delicate LFT (§3.2 collapse
+  warning). Class head keeps `sk_gate` init 0.1 (reference value) since the binary head is reinit anyway.
 
 ---
 

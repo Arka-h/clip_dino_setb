@@ -1,0 +1,215 @@
+diff --git a/models/dino/deformable_transformer.py b/models/dino/deformable_transformer.py
+index 32d88dd..4b1136b 100644
+--- a/models/dino/deformable_transformer.py
++++ b/models/dino/deformable_transformer.py
+@@ -253,7 +253,8 @@ class DeformableTransformer(nn.Module):
+             self.refpoint_embed.weight.data[:, :2] = inverse_sigmoid(self.refpoint_embed.weight.data[:, :2])
+             self.refpoint_embed.weight.data[:, :2].requires_grad = False
+ 
+-    def forward(self, srcs, masks, refpoint_embed, pos_embeds, tgt, attn_mask=None):
++    def forward(self, srcs, masks, refpoint_embed, pos_embeds, tgt, attn_mask=None,
++                sketch_tokens=None, pooled_sketch=None):
+         """
+         Input:
+             - srcs: List of multi features [bs, ci, hi, wi]
+@@ -393,10 +394,11 @@ class DeformableTransformer(nn.Module):
+                 memory=memory.transpose(0, 1), 
+                 memory_key_padding_mask=mask_flatten, 
+                 pos=lvl_pos_embed_flatten.transpose(0, 1),
+-                refpoints_unsigmoid=refpoint_embed.transpose(0, 1), 
+-                level_start_index=level_start_index, 
++                refpoints_unsigmoid=refpoint_embed.transpose(0, 1),
++                level_start_index=level_start_index,
+                 spatial_shapes=spatial_shapes,
+-                valid_ratios=valid_ratios,tgt_mask=attn_mask)
++                valid_ratios=valid_ratios,tgt_mask=attn_mask,
++                sketch_tokens=sketch_tokens, pooled_sketch=pooled_sketch)  # CASF: decoder-only conditioning
+         #########################################################
+         # End Decoder
+         # hs: n_dec, bs, nq, d_model
+@@ -619,6 +621,9 @@ class TransformerDecoder(nn.Module):
+             self.query_scale = MLP(d_model, d_model, d_model, 2)
+         self.bbox_embed = None
+         self.class_embed = None
++        # CASF: per-layer sketch cross-attn (DePathBlock) + zero-init box adapter; assigned by DINO model.
++        self.refine_output = None        # ModuleList[DePathBlock] or None (base DINO)
++        self.box_sketch_adapter = None   # ModuleList[BoxSketchAdapter] or None (base DINO)
+ 
+         self.d_model = d_model
+         self.modulate_hw_attn = modulate_hw_attn
+@@ -657,7 +662,8 @@ class TransformerDecoder(nn.Module):
+                 level_start_index: Optional[Tensor] = None, # num_levels
+                 spatial_shapes: Optional[Tensor] = None, # bs, num_levels, 2
+                 valid_ratios: Optional[Tensor] = None,
+-                
++                sketch_tokens: Optional[Tensor] = None,   # CASF: [bs, T, d_clip]  (None -> base DINO)
++                pooled_sketch: Optional[Tensor] = None,   # CASF: [bs, d_model]    (None -> base DINO)
+                 ):
+         """
+         Input:
+@@ -703,6 +709,14 @@ class TransformerDecoder(nn.Module):
+                 query_sine_embed[..., self.d_model // 2:] *= (refHW_cond[..., 0] / reference_points[..., 2]).unsqueeze(-1)
+                 query_sine_embed[..., :self.d_model // 2] *= (refHW_cond[..., 1] / reference_points[..., 3]).unsqueeze(-1)
+ 
++            # CASF (D1): refine decoder queries by cross-attending to CLIP sketch tokens, BEFORE the
++            # decoder layer's self/cross-attn. This is query->sketch cross-attn (no query<->query
++            # interaction) so it is orthogonal to the CDN self_attn_mask and applies uniformly to CDN-pad
++            # and matching queries. output: [nq, bs, 256] -> [bs, nq, 256] -> refine -> back.
++            if self.refine_output is not None and sketch_tokens is not None:
++                output = self.refine_output[layer_id](
++                    q_BQD=output.transpose(0, 1), kv_BTD=sketch_tokens).transpose(0, 1)
++
+             # random drop some layers if needed
+             dropflag = False
+             if self.dec_layer_dropout_prob is not None:
+@@ -730,7 +744,13 @@ class TransformerDecoder(nn.Module):
+             # iter update
+             if self.bbox_embed is not None:
+                 reference_before_sigmoid = inverse_sigmoid(reference_points)
+-                delta_unsig = self.bbox_embed[layer_id](output)
++                # CASF (D2): additive zero-init sketch injection into the NATIVE 256-in box head, before
++                # the LFT anchor update. gate init 0.0 + zero-init proj -> identity at start (pretrained
++                # LFT preserved); learned up during training. Falls back to plain `output` for base DINO.
++                box_in = output
++                if self.box_sketch_adapter is not None and pooled_sketch is not None:
++                    box_in = self.box_sketch_adapter[layer_id](output.transpose(0, 1), pooled_sketch).transpose(0, 1)
++                delta_unsig = self.bbox_embed[layer_id](box_in)
+                 outputs_unsig = delta_unsig + reference_before_sigmoid
+                 new_reference_points = outputs_unsig.sigmoid()
+ 
+diff --git a/models/dino/dino.py b/models/dino/dino.py
+index 15131ba..2434873 100644
+--- a/models/dino/dino.py
++++ b/models/dino/dino.py
+@@ -57,6 +57,10 @@ class DINO(nn.Module):
+                     dn_box_noise_scale = 0.4,
+                     dn_label_noise_ratio = 0.5,
+                     dn_labelbook_size = 100,
++                    # CASF sketch-conditioning (decoder-only; see DESIGN_LOG)
++                    casf = False,
++                    casf_clip_ckpt = None,
++                    casf_freeze = 'partial',
+                     ):
+         """ Initializes the model.
+         Parameters:
+@@ -172,6 +176,33 @@ class DINO(nn.Module):
+             if self.two_stage_add_query_num > 0:
+                 self.init_ref_points(two_stage_add_query_num)
+ 
++        # ----------------------------------------------------------------------------------------
++        # CASF: decoder-only sketch conditioning. enc_out_{class,bbox}_embed above stay NATIVE and
++        # sketch-free (D6) -> query selection unchanged. We replace ONLY the decoder class head with a
++        # gated-concat head (D3) and add DePathBlock (D1) + zero-init box adapter (D2) onto the decoder.
++        # ----------------------------------------------------------------------------------------
++        self.casf = casf
++        if casf:
++            import sys, os as _os
++            _root = _os.path.abspath(_os.path.join(_os.path.dirname(__file__), '..', '..', '..'))
++            if _root not in sys.path:
++                sys.path.insert(0, _root)
++            from casf.clip_encoder import SketchCLIP
++            from casf.modules import DePathBlock, SketchMeanPool, BoxSketchAdapter, GatedConcatClassHead
++            n_dec = transformer.num_decoder_layers
++            self.casf_clip = SketchCLIP(casf_clip_ckpt, freeze=casf_freeze)         # frozen-ish CLIP (D8)
++            self.casf_pool = SketchMeanPool(in_dim=768, out_dim=hidden_dim)         # mean-pool 768->256 (D5)
++            self.transformer.decoder.refine_output = nn.ModuleList([
++                DePathBlock(d_model=hidden_dim, d_clip=768, n_heads=4, head_dim=hidden_dim // 4,
++                            share_kv=True, zero_init_residual=True) for _ in range(n_dec)])  # D1 + warm-start
++            self.transformer.decoder.box_sketch_adapter = nn.ModuleList([
++                BoxSketchAdapter(d_model=hidden_dim, init_gate=0.0) for _ in range(n_dec)])   # D2 identity@init
++            gated = nn.ModuleList([
++                GatedConcatClassHead(d_model=hidden_dim, num_classes=num_classes, init_gate=0.1)
++                for _ in range(n_dec)])                                              # D3 (512-in, binary)
++            self.class_embed = gated
++            self.transformer.decoder.class_embed = gated  # unused at dec line 742 (dec_layer_number=None)
++
+         self.decoder_sa_type = decoder_sa_type
+         assert decoder_sa_type in ['sa', 'ca_label', 'ca_content']
+         if decoder_sa_type == 'ca_label':
+@@ -218,7 +249,7 @@ class DINO(nn.Module):
+         else:
+             raise NotImplementedError('Unknown fix_refpoints_hw {}'.format(self.fix_refpoints_hw))
+ 
+-    def forward(self, samples: NestedTensor, targets:List=None):
++    def forward(self, samples: NestedTensor, targets:List=None, sketches=None):
+         """ The forward expects a NestedTensor, which consists of:
+                - samples.tensor: batched images, of shape [batch_size x 3 x H x W]
+                - samples.mask: a binary mask of shape [batch_size x H x W], containing 1 on padded pixels
+@@ -267,7 +298,16 @@ class DINO(nn.Module):
+             assert targets is None
+             input_query_bbox = input_query_label = attn_mask = dn_meta = None
+ 
+-        hs, reference, hs_enc, ref_enc, init_box_proposal = self.transformer(srcs, masks, input_query_bbox, poss,input_query_label,attn_mask)
++        # CASF: encode the sketch into tokens (D1 K/V) + pooled vector (D2/D3). Decoder-only (D6): these
++        # are passed ONLY to the decoder; the encoder/query-selection above never sees the sketch.
++        sketch_tokens = pooled_sketch = None
++        if getattr(self, 'casf', False) and sketches is not None:
++            sketch_tokens = self.casf_clip(sketches)        # [B, 50, 768]
++            pooled_sketch = self.casf_pool(sketch_tokens)   # [B, 256]
++
++        hs, reference, hs_enc, ref_enc, init_box_proposal = self.transformer(
++            srcs, masks, input_query_bbox, poss, input_query_label, attn_mask,
++            sketch_tokens=sketch_tokens, pooled_sketch=pooled_sketch)
+         # In case num object=0
+         hs[0] += self.label_enc.weight[0,0]*0.0
+ 
+@@ -275,14 +315,22 @@ class DINO(nn.Module):
+         # reference_before_sigmoid = inverse_sigmoid(reference[:-1]) # n_dec, bs, nq, 4
+         outputs_coord_list = []
+         for dec_lid, (layer_ref_sig, layer_bbox_embed, layer_hs) in enumerate(zip(reference[:-1], self.bbox_embed, hs)):
+-            layer_delta_unsig = layer_bbox_embed(layer_hs)
++            # CASF (D2): additive zero-init sketch injection into the native box head (identity at init).
++            box_in = layer_hs
++            if getattr(self, 'casf', False) and pooled_sketch is not None:
++                box_in = self.transformer.decoder.box_sketch_adapter[dec_lid](layer_hs, pooled_sketch)
++            layer_delta_unsig = layer_bbox_embed(box_in)
+             layer_outputs_unsig = layer_delta_unsig  + inverse_sigmoid(layer_ref_sig)
+             layer_outputs_unsig = layer_outputs_unsig.sigmoid()
+             outputs_coord_list.append(layer_outputs_unsig)
+-        outputs_coord_list = torch.stack(outputs_coord_list)        
++        outputs_coord_list = torch.stack(outputs_coord_list)
+ 
+-        outputs_class = torch.stack([layer_cls_embed(layer_hs) for
+-                                     layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
++        # CASF (D3): gated-concat class head takes (hs, pooled_sketch); base DINO uses the plain head.
++        if getattr(self, 'casf', False) and pooled_sketch is not None:
++            outputs_class = torch.stack([self.class_embed[i](hs[i], pooled_sketch) for i in range(len(hs))])
++        else:
++            outputs_class = torch.stack([layer_cls_embed(layer_hs) for
++                                         layer_cls_embed, layer_hs in zip(self.class_embed, hs)])
+         if self.dn_number > 0 and dn_meta is not None:
+             outputs_class, outputs_coord_list = \
+                 dn_post_process(outputs_class, outputs_coord_list,
+@@ -755,6 +803,10 @@ def build_dino(args):
+         dn_box_noise_scale = args.dn_box_noise_scale,
+         dn_label_noise_ratio = args.dn_label_noise_ratio,
+         dn_labelbook_size = dn_labelbook_size,
++        # CASF sketch-conditioning
++        casf = getattr(args, 'casf', False),
++        casf_clip_ckpt = getattr(args, 'casf_clip_ckpt', None),
++        casf_freeze = getattr(args, 'casf_freeze', 'partial'),
+     )
+     if args.masks:
+         model = DETRsegm(model, freeze_detr=(args.frozen_weights is not None))
+diff --git a/models/dino/ops/src/cuda/ms_deform_attn_cuda.cu b/models/dino/ops/src/cuda/ms_deform_attn_cuda.cu
+index d6d5836..5ea874b 100644
+--- a/models/dino/ops/src/cuda/ms_deform_attn_cuda.cu
++++ b/models/dino/ops/src/cuda/ms_deform_attn_cuda.cu
+@@ -61,7 +61,7 @@ at::Tensor ms_deform_attn_cuda_forward(
+     for (int n = 0; n < batch/im2col_step_; ++n)
+     {
+         auto columns = output_n.select(0, n);
+-        AT_DISPATCH_FLOATING_TYPES(value.type(), "ms_deform_attn_forward_cuda", ([&] {
++        AT_DISPATCH_FLOATING_TYPES(value.scalar_type(), "ms_deform_attn_forward_cuda", ([&] {
+             ms_deformable_im2col_cuda(at::cuda::getCurrentCUDAStream(),
+                 value.data<scalar_t>() + n * im2col_step_ * per_value_size,
+                 spatial_shapes.data<int64_t>(),
+@@ -131,7 +131,7 @@ std::vector<at::Tensor> ms_deform_attn_cuda_backward(
+     for (int n = 0; n < batch/im2col_step_; ++n)
+     {
+         auto grad_output_g = grad_output_n.select(0, n);
+-        AT_DISPATCH_FLOATING_TYPES(value.type(), "ms_deform_attn_backward_cuda", ([&] {
++        AT_DISPATCH_FLOATING_TYPES(value.scalar_type(), "ms_deform_attn_backward_cuda", ([&] {
+             ms_deformable_col2im_cuda(at::cuda::getCurrentCUDAStream(),
+                                     grad_output_g.data<scalar_t>(),
+                                     value.data<scalar_t>() + n * im2col_step_ * per_value_size,
