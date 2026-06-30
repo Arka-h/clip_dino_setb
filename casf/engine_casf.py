@@ -23,12 +23,14 @@ def _targets_to_device(targets, device):
 
 
 def train_one_epoch_casf(model, criterion, data_loader, optimizer, device, epoch,
-                         accum_steps=1, max_norm=0.1, print_every=50):
+                         accum_steps=1, max_norm=0.1, print_every=50, max_iters=None):
     model.train(); criterion.train()
     weight = criterion.weight_dict
     optimizer.zero_grad(set_to_none=True)
     running = 0.0
     for it, (samples, targets, sketches) in enumerate(data_loader):
+        if max_iters is not None and it >= max_iters:
+            break
         samples = samples.to(device); sketches = sketches.to(device)
         targets = _targets_to_device(targets, device)
         out = model(samples, targets=targets, sketches=sketches)
