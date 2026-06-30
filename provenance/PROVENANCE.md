@@ -6,6 +6,12 @@
   clip_dino/ckpts/checkpoint0011_4scale.pth — WEIGHTS ONLY, no clip_dino code used). 626 tensors, class_embed 91-way.
 - Ops: models/dino/ops compiled torch2.7/cu128, sm_75, with value.type()->value.scalar_type() compat patch.
 
+## Base-detector paper reproduction (COCO val2017, 2026-07-01)
+- smoke/eval_dino_coco_paper.py, deterministic, val2017 5000 imgs, load missing=0/unexpected=0.
+- **box AP = 0.4902** (AP@50 0.6663, AP@75 0.5351, AP_s/m/l 0.3234/0.5234/0.6293,
+  AR@1/10/100 0.3777/0.6503/0.7260) == official DINO-4scale R50 12ep (~0.490). Clean DINO foundation
+  confirmed BEFORE CASF. Raw artifact: outputs/dino_paper_verify/ (gitignored).
+
 ## Assets
 - COCO 2017: /mnt/1tb/data/coco (train2017, val2017, annotations + qd_train_{open,closed}_*.json present).
 - QuickDraw sketch-rnn: /mnt/1tb/data/quickdraw/sketchrnn/{cat}.{train,valid}.{ptr,strokes}.npy (1035 cats; all Set B present).
