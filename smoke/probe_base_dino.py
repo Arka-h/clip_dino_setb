@@ -15,7 +15,7 @@ torch.use_deterministic_algorithms(True, warn_only=True)
 SEED = 0
 torch.manual_seed(SEED); np.random.seed(SEED); random.seed(SEED)
 
-DINO = "/home/rahul/arka/dino_casf_port/DINO_upstream"
+DINO = "/home/rahul/arka/clip_dino_setb/DINO_upstream"
 sys.path.insert(0, DINO)
 from main import get_args_parser, build_model_main
 from util.slconfig import SLConfig
@@ -41,7 +41,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--out', required=True)
     p.add_argument('--config_file', default=os.path.join(DINO, 'config/DINO/DINO_4scale.py'))
-    p.add_argument('--ckpt', default='/home/rahul/arka/dino_casf_port/provenance/dino_r50_4scale_coco_official.pth')
+    p.add_argument('--ckpt', default='/home/rahul/arka/clip_dino_setb/provenance/dino_r50_4scale_coco_official.pth')
     a = p.parse_args()
 
     args = make_args(a.config_file)

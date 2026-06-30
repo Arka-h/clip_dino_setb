@@ -18,7 +18,7 @@ torch.backends.cudnn.benchmark = False
 torch.use_deterministic_algorithms(True, warn_only=True)
 torch.manual_seed(0); np.random.seed(0); random.seed(0)
 
-ROOT = "/home/rahul/arka/dino_casf_port"
+ROOT = "/home/rahul/arka/clip_dino_setb"
 DINO = os.path.join(ROOT, "DINO_upstream")
 sys.path.insert(0, ROOT); sys.path.insert(0, DINO)
 from main import get_args_parser, build_model_main

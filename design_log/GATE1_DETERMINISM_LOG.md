@@ -37,3 +37,16 @@ missing=0/unexpected=0; partial-freeze → 50 trainable LN param-tensors.
 Gate 1 (§7) is satisfied for BOTH base and full DINO-CASF. Note: the eval-time AP-determinism on real
 data still needs re-confirmation once the dataset adapter (task #6) exists, but the model-output bit-
 identity (the core of Gate 1) is established.
+
+## Data path determinism (task #6) — ✅ [2026-06-30]
+- seed-14 single-query val (fresh `random.Random(14)` per image for cat AND sketch pick, `sorted` candidate
+  cats from raw anns, n_sketches=1): selected category bit-reproducible across two independent dataset
+  constructions (smoke: img 139→clock, 724→stop sign, 802→oven, 1000/1268→backpack on two builds).
+- Dataset cat-selection candidate set == seed-14 GT candidate set (both `sorted({a['category_id'] for a
+  in raw anns})`) → GT/pred consistency for pycocotools (Gate-4).
+- One end-to-end train step (DINO-CASF, num_classes=2, CDN active): loss finite, grad reaches DePathBlock.
+- Eval 12-stat path runs (COCOeval vs seed-14 binary GT) — full 12 stats produced.
+- Memory probe (single GPU): micro-batch up to 6 → 18.2 GB peak; effective batch 8 fits as a single
+  micro-batch (~24 GB) when GPU is free → grad-accum available (casf/engine_casf.py) but not required.
+- NOTE: eval-time AP determinism on real data (two-launch) to be confirmed in Gate 2 with a trained ckpt;
+  model-output bit-identity already established (Gate 1 full).

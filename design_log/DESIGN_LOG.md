@@ -4,7 +4,7 @@ Every DINO-specific decision for porting CASF (Deformable-DETR → DINO-DETR), w
 code anchors. **No silent choices.** Status markers: ✅ decided · ⚠️ decided-but-verify-empirically ·
 ❓ open (needs a run or a user call).
 
-Anchors use the clean upstream clone at `dino_casf_port/DINO_upstream` (IDEA-Research DINO, commit
+Anchors use the clean upstream clone at `clip_dino_setb/DINO_upstream` (IDEA-Research DINO, commit
 `d84a491`). Reference CASF anchors are in `clip_ddetr_ow_repr` (`models/deformable_transformer.py`,
 `models/deformable_detr.py`). Training/eval discipline anchors are in `clip_ddetr_clean_run` /
 `clip_ddetr_analysis`.
@@ -19,7 +19,7 @@ Anchors use the clean upstream clone at `dino_casf_port/DINO_upstream` (IDEA-Res
   `transformer.*`, `class_embed.*` = 91-way, args.num_queries=900, backbone=resnet50). It currently lives
   under the forbidden `clip_dino/ckpts/` dir, but it is the *official IDEA-Research weights file*
   (timestamp Jul-2022, standard layout) — only the **weights** are reused, never `clip_dino` code. We will
-  copy it into `dino_casf_port/` to decouple from that repo.
+  copy it into `clip_dino_setb/` to decouple from that repo.
 - **Ops:** `models/dino/ops` CUDA kernels compiled against torch 2.7/cu128 after a one-line compat patch
   (`AT_DISPATCH_FLOATING_TYPES(value.type()…)` → `value.scalar_type()`) — build-compat only, no logic
   change. `.so` built for sm_75 (Quadro RTX 8000).

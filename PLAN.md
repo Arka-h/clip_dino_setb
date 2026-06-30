@@ -99,6 +99,6 @@ STOP and report if Gate 1 or Gate 2 fails.
 
 ---
 ## Working notes / status (live)
-- Working dir: /home/rahul/arka/dino_casf_port (quarantined, NOT one of the 3 source repos).
+- Working dir: /home/rahul/arka/clip_dino_setb (quarantined, NOT one of the 3 source repos).
 - mAP/AP reported as decimals (e.g. 0.419), never percentage points. [user pref]
 - Git commits: NO trailers. [repo rule]
