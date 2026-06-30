@@ -26,3 +26,6 @@ DINO_upstream/figs/
 
 # regenerable (and historically leaky) CASF subset caches — never track
 annotations_casf/
+
+# run artifacts (checkpoints, logs, eval results) — never track (matches clip_ddetr)
+outputs
