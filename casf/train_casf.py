@@ -128,6 +128,8 @@ def main():
     p.add_argument('--max_iters', type=int, default=None, help='debug: cap train iters/epoch')
     p.add_argument('--num_workers', type=int, default=2)
     p.add_argument('--max_eval_imgs', type=int, default=None, help='debug: cap eval images')
+    p.add_argument('--sched', choices=['cos34', 'constant'], default='cos34',
+                   help='constant = flat base lrs (no warmup) for a quick sanity signal; cos34 = headline schedule')
     a = p.parse_args()
 
     torch.manual_seed(a.seed); np.random.seed(a.seed); random.seed(a.seed)
@@ -146,7 +148,8 @@ def main():
         run_eval(model, postprocessors, a.device, num_select, a.max_eval_imgs); return
 
     optimizer = make_optimizer(model)
-    sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=cos34_mult)
+    lr_lambda = cos34_mult if a.sched == 'cos34' else (lambda e: 1.0)
+    sched = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda=lr_lambda)
     base_main = sched.base_lrs[0]  # 1e-4; LambdaLR already applied mult to param_groups at construction
     print(f"[cos34] ep0 mult={cos34_mult(0):.3f} -> main lr={base_main*cos34_mult(0):.2e} "
           f"(expect 1.00e-05); ep5 mult={cos34_mult(5):.3f} (lr {base_main*cos34_mult(5):.2e}); "
@@ -157,7 +160,7 @@ def main():
     if not os.path.exists(prov):
         json.dump({'wandb_name': a.wandb_name, 'output_dir': a.output_dir, 'holdout_setB': sorted(SET_B),
                    'seed': a.seed, 'git_commit': git_commit(), 'data_frac': a.data_frac,
-                   'effective_batch': a.microbatch*accum, 'schedule': 'cos34', 'epochs': a.epochs,
+                   'effective_batch': a.microbatch*accum, 'schedule': a.sched, 'epochs': a.epochs,
                    'design_log': 'design_log/DESIGN_LOG.md (D1 CDN,D2 LFT,D3 class,D6 enc-free)'},
                   open(prov, 'w'), indent=2)
 
